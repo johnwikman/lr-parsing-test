@@ -43,7 +43,7 @@ let cmpLRProduction : LRProduction -> LRProduction -> Int = lam lhs. lam rhs.
     then nameres
     else cmpLRItem litems ritems
 
-let cmp3tuple : (a -> a -> Int) -> (b -> b -> Int) -> (c -> c -> Int) -> ((a, b, c) -> (a, b, c) -> Int) =
+let cmp3tuple : all a. all b. all c. (a -> a -> Int) -> (b -> b -> Int) -> (c -> c -> Int) -> ((a, b, c) -> (a, b, c) -> Int) =
     lam cmpa. lam cmpb. lam cmpc. (lam x. lam y.
         let ra = cmpa x.0 y.0 in
         if neqi ra 0 then ra else --continue
@@ -157,10 +157,10 @@ let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
                 match partitionDot item with (foundDot, preDot, postDot) in
                 match postDot with [EOF ()] ++ _ then
                     -- End of file after dot, generate an accept edge (goto -1)
-                    if setMem (i, EOF (), -1) e then
+                    if setMem (i, EOF (),  negi 1) e then
                         acc
                     else
-                        let e = setInsert (i, EOF (), -1) in
+                        let e = setInsert (i, EOF (), negi 1) e in
                         (true, nextIdx, t, e)
                 else match postDot with [xSymbol] ++ _ then
                     -- If there exists a token after the dot...
@@ -172,12 +172,12 @@ let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
                     ) (None ()) t in
                     match jIdx with Some j then
                         -- This rule already exists, check if edge exists!
-                        if setMem (i, xSymbol, j) then
+                        if setMem (i, xSymbol, j) e then
                             -- edge and j already exists...
                             acc
                         else
                             -- just add the edge
-                            let e = setInsert (i, xSymbol, j) in
+                            let e = setInsert (i, xSymbol, j) e in
                             (true, nextIdx, t, e)
                     else
                         -- This does not exist, allocate new index and edge
@@ -238,3 +238,6 @@ lang LRParserTokens
     sem generateParser : Int -> LRGrammar -> ParserAST?
 end
 -/
+
+mexpr
+print "TODO\n"; buildLR0states
