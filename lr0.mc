@@ -2,6 +2,7 @@
 -- https://www.cambridge.org/se/academic/subjects/computer-science/programming-languages-and-applied-logic/modern-compiler-implementation-java-2nd-edition?format=HB&isbn=9780521820608
 
 include "char.mc"
+include "common.mc"
 include "option.mc"
 include "seq.mc"
 include "set.mc"
@@ -16,6 +17,15 @@ con EOF : () -> LRSymbol
 type LRItem = [LRSymbol]
 
 type LRProduction = (String, LRItem)
+
+let showLRSymbol = lam x. switch x
+    case Terminal c then join ["Terminal(\'", [c], "\')"]
+    case NonTerminal s then join ["NonTerminal(\"", s, "\")"]
+    case StackMarker _ then join ["STACK"]
+    case EOF _ then join ["EOF"]
+    end
+let showLRItem = lam x. join ["LRItem[", strJoin ", " (map showLRSymbol x), "]"]
+let showLRProduction = lam x. join ["LRProduction(", x.0, ", ", showLRItem x.1, ")"]
 
 let cmpLRSymbol : LRSymbol -> LRSymbol -> Int = lam lhs. lam rhs.
     let weight : LRSymbol -> Int = lam s.
@@ -75,12 +85,21 @@ let syntaxDef: [LRProduction] = [
     ("L",  [NonTerminal "L", Terminal ',', NonTerminal "S"])
 ]
 
-let syntaxLookup : Map String [LRItem] =
+--let syntaxLookup : Map String [LRItem] =
+--    foldl (lam acc. lam e.
+--        match e with (name, item) in
+--        let newV = mapFindApplyOrElse (lam v. snoc v item) (lam. [item]) name acc in
+--        mapInsert name newV acc
+--    ) (mapEmpty cmpString) syntaxDef
+
+let syntaxLookup : String -> [LRItem] = lam k.
     foldl (lam acc. lam e.
-        match e with (name, item) in
-        let newV = mapFindApplyOrElse (lam v. snoc v item) (lam. [item]) name acc in
-        mapInsert name newV acc
-    ) (mapEmpty cmpString) syntaxDef
+        match e with (name, items) in
+        if eqString k name
+          then snoc acc items
+          else acc
+    ) [] syntaxDef
+
 
 let emptyClosure : Set LRProduction = setEmpty cmpLRProduction
 
@@ -99,11 +118,11 @@ let closure: Set LRProduction -> Set LRProduction = lam inSet.
                         acc
                     else
                         (true, setInsert newprod accSet)
-                ) accStatus (mapLookupOrElse (lam. []) name syntaxLookup)
+                ) accStatus (syntaxLookup name)
             else
                 -- No non-terminal after the dot/stackmarker
                 accStatus
-        ) (false, curSet) inSet in
+        ) (false, curSet) curSet in
         match res with (hasUpdated, accSet) in
         if hasUpdated then
             work accSet
@@ -138,7 +157,7 @@ let goto : Set LRProduction -> LRSymbol -> Set LRProduction = lam inSet. lam x.
 
 let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
     let t: Map Int (Set LRProduction) = mapEmpty subi in
-    let t = mapInsert 0 (closure (setInsert ("S'", [NonTerminal "S", EOF ()]) emptyClosure)) t in
+    let t = mapInsert 0 (closure (setInsert ("S'", [StackMarker (), NonTerminal "S", EOF ()]) emptyClosure)) t in
     -- need to have indexed for the closured probably...
     let e: Set (Int, LRSymbol, Int) = setEmpty (cmp3tuple subi cmpLRSymbol subi) in
     recursive let work = lam nextIdx. lam t. lam e.
@@ -157,7 +176,7 @@ let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
                 match partitionDot item with (foundDot, preDot, postDot) in
                 match postDot with [EOF ()] ++ _ then
                     -- End of file after dot, generate an accept edge (goto -1)
-                    if setMem (i, EOF (),  negi 1) e then
+                    if setMem (i, EOF (), negi 1) e then
                         acc
                     else
                         let e = setInsert (i, EOF (), negi 1) e in
@@ -204,6 +223,33 @@ let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
     -- May also be able to generate the necessary reduce actions here as well...
 
 
+let buildReduceActions: (Map Int (Set LRProduction), Set (Int, LRSymbol, Int), Set (Int, LRProduction, LRItem)) =
+    -- R <- {}
+    -- for each state I in T
+    --   for each item A -> a. in I
+    --     R <- R u {(I, A -> a)}
+    let rInit: Set (Int, LRProduction, LRItem) = setEmpty (cmp3tuple subi cmpLRProduction cmpLRItem) in
+    match buildLR0states with (t, e) in
+    let r =
+        -- for each state I in T
+        foldl (lam r. lam i_entry: (Int, Set LRProduction).
+            match i_entry with (i_idx, i_prods) in
+            -- for each item A -> a. in I
+            setFold (lam r. lam a_entry: LRProduction.
+                match a_entry with (_, item) in
+                match partitionDot item with (true, items, []) then
+                    -- R <- R u {(I, A -> a)}
+                    setInsert (i_idx, a_entry, items) r
+                else
+                    r -- does not match the A -> a. format
+            ) r i_prods
+        ) rInit (mapBindings t)
+    in
+    (t, e, r)
+
+
+
+
 /-
 -- Sketch for interface against the tool
 lang LRParserTokens
@@ -240,4 +286,55 @@ end
 -/
 
 mexpr
-print "TODO\n"; buildLR0states
+print "TODO\n";
+match buildReduceActions with (t, e, r) in
+
+let showSet: all a. (Int -> a -> String) -> Int -> Set a -> String = lam showfunc. lam indent. lam s.
+    let newline = cons '\n' (make (addi indent 4) ' ') in
+    let final_newline = cons '\n' (make indent ' ') in
+    let parts = map (showfunc (addi indent 4)) (mapKeys s) in
+    join ["{", newline, strJoin (cons ',' newline) parts, final_newline, "}"]
+in
+let showSeq: all a. (Int -> a -> String) -> Int -> [a] -> String = lam showfunc. lam indent. lam s.
+    let newline = cons '\n' (make (addi indent 4) ' ') in
+    let final_newline = cons '\n' (make indent ' ') in
+    let parts = map (showfunc (addi indent 4)) s in
+    join ["[", newline, strJoin (cons ',' newline) parts, final_newline, "]"]
+in
+let showMap: all k. all v. (Int -> k -> String) -> (Int -> v -> String) -> Int -> Map k v -> String = lam show_k. lam show_v. lam indent. lam m.
+    let newline = cons '\n' (make (addi indent 4) ' ') in
+    let final_newline = cons '\n' (make indent ' ') in
+    let parts = map (lam kv. 
+        match kv with (mk, mv) in
+        join [show_k (addi indent 4) mk, ": ", show_v (addi indent 4) mv]
+    ) (mapBindings m) in
+    join ["{", newline, strJoin (cons ',' newline) parts, final_newline, "}"]
+in
+let show3tuple: all a. all b. all c. (Int -> a -> String) -> (Int -> b -> String) -> (Int -> c -> String) -> Int -> (a,b,c) -> String =
+    lam show_a. lam show_b. lam show_c. lam indent. lam tup.
+    let newline = cons '\n' (make (addi indent 4) ' ') in
+    let final_newline = cons '\n' (make indent ' ') in
+    join ["(", newline,
+          show_a (addi indent 4) tup.0, cons ',' newline,
+          show_b (addi indent 4) tup.1, cons ',' newline,
+          show_c (addi indent 4) tup.2, final_newline,
+          ")"]
+in
+let showLRSymbol = lam indent. lam x. showLRSymbol x in
+let showLRItem = lam indent. lam x. showLRItem x in
+let showLRProduction = lam indent. lam x. showLRProduction x in
+let showInt = lam indent. lam i. int2string i in
+
+let showT = showMap showInt (showSet showLRProduction) 0 in
+let showE = showSet (show3tuple showInt showLRSymbol showInt) 0 in
+let showR = showSet (show3tuple showInt showLRProduction showLRItem) 0 in
+
+print "syntax: ";
+printLn (showSeq showLRProduction 0 syntaxDef);
+print "states (T): ";
+printLn (showT t);
+print "transitions (E): ";
+printLn (showE e);
+print "reductions (R): ";
+printLn (showR r);
+()
