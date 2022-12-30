@@ -75,7 +75,6 @@ lang LR1Base = LexerToken
   syn LR1Term =
   | Terminal Token
   | NonTerminal Name
-  | Empty ()
 
   type LR1Rule = {
     name: Name,
@@ -107,13 +106,9 @@ lang LR1Base = LexerToken
   sem lr1term2string =
   | Terminal t -> token2string t
   | NonTerminal n -> join (["NonTerminal(", nameGetStr n, ")"])
-  | Empty _ -> "_empty_"
 
   sem cmpLR1Term2 : (LR1Term, LR1Term) -> Int
   sem cmpLR1Term2 =
-  | (Empty _, Empty _) -> 0
-  | (Empty _, !(Empty _)) -> negi 1
-  | (!(Empty _), Empty _) -> 1
   | (Terminal t1, Terminal t2) -> cmpTokenKind t1 t2
   | (Terminal _, NonTerminal _) -> negi 1
   | (NonTerminal n1, NonTerminal n2) -> nameCmp n1 n2
@@ -168,11 +163,9 @@ let lr1TableBuilder = lam syntaxDef.
   let computeNFF =
     let allTerminals = map (lam t. Terminal t) (tokenListAll ()) in
     let allNonTerminals = map (lam n. NonTerminal n) (mapKeys ruleLookup) in
-    let allNonEmptyTerms = concat allTerminals allNonTerminals in
-    let allTerms = cons (Empty ()) allNonEmptyTerms in
+    let allTerms = concat allTerminals allNonTerminals in
     -- initialize NULLABLE to false (except for empty and EOF, which by definition is nullable)
     let nullable = foldl (lam nullable. lam term. mapInsert term false nullable) nullable allTerms in
-    let nullable = mapInsert (Empty ()) true nullable in
     -- initialize FIRST and FOLLOW to empty sets
     let follow = foldl (lam follow. lam term. mapInsert term (setEmpty cmpTokenKind) follow) follow allTerms in
     let first = foldl (lam first. lam term.
@@ -672,6 +665,48 @@ let #var"*s = **a": [Token] = [
   Star (), StringLiteral "s", Equality (), Star (), Star (), StringLiteral "a"
 ] in
 
+
+-- Example with empty rule
+let syntaxDef_Empty_example =
+  let _S = nameSym "S" in
+  --let _E = nameSym "E" in
+  --let _V = nameSym "V" in
+  {
+    entrypoint = _S,
+    rules = [
+      {name = _S, terms = [Terminal (Star ()), NonTerminal _S]},
+      {name = _S, terms = []}
+    ]
+  }
+in
+
+let #var"***": [Token] = [
+  Star (), Star (), Star ()
+] in
+
+-- Example of LR(2) grammar from here: https://stackoverflow.com/questions/62075086/what-is-an-lr2-parser-how-does-it-differ-from-an-lr1-parser
+let syntaxDef_LR2_example =
+  let _S = nameSym "S" in
+  let _R = nameSym "R" in
+  let _T = nameSym "T" in
+  {
+    entrypoint = _S,
+    rules = [
+      {name = _S, terms = [NonTerminal _R, NonTerminal _S]},
+      {name = _S, terms = [NonTerminal _R]},
+      {name = _R, terms = [Terminal (Star ()), Terminal (StringLiteral ""), NonTerminal _T]},
+      {name = _T, terms = [Terminal (Star ())]},
+      {name = _T, terms = [Terminal (Equality ())]},
+      {name = _T, terms = []}
+    ]
+  }
+in
+
+let #var"*a*b=": [Token] = [
+  Star (), StringLiteral "a", Star (), StringLiteral "b", Equality ()
+] in
+
+
 -- Set the syntax and input tokens to use
 -- LR0 Example:
 --let syntaxDef = syntaxDef_LR0_example in
@@ -679,6 +714,12 @@ let #var"*s = **a": [Token] = [
 -- LR1 Example:
 let syntaxDef = syntaxDef_LR1_example in
 let tokens = #var"*s = **a" in
+-- Empty Example:
+--let syntaxDef = syntaxDef_Empty_example in
+--let tokens = #var"***" in
+-- LR2 Example: (This should fail since we are only LR1!)
+--let syntaxDef = syntaxDef_LR2_example in
+--let tokens = #var"*a*b=" in
 
 let res = lr1TableBuilder syntaxDef in
 match res with (syntaxDef, parseTable) in
