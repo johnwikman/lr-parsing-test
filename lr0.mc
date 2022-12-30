@@ -223,12 +223,12 @@ let buildLR0states : (Map Int (Set LRProduction), Set (Int, LRSymbol, Int)) =
     -- May also be able to generate the necessary reduce actions here as well...
 
 
-let buildReduceActions: (Map Int (Set LRProduction), Set (Int, LRSymbol, Int), Set (Int, LRProduction, LRItem)) =
+let buildReduceActions: (Map Int (Set LRProduction), Set (Int, LRSymbol, Int), Set (Int, LRProduction, Int)) =
     -- R <- {}
     -- for each state I in T
     --   for each item A -> a. in I
     --     R <- R u {(I, A -> a)}
-    let rInit: Set (Int, LRProduction, LRItem) = setEmpty (cmp3tuple subi cmpLRProduction cmpLRItem) in
+    let rInit: Set (Int, LRProduction, Int) = setEmpty (cmp3tuple subi cmpLRProduction subi) in
     match buildLR0states with (t, e) in
     let r =
         -- for each state I in T
@@ -236,10 +236,24 @@ let buildReduceActions: (Map Int (Set LRProduction), Set (Int, LRSymbol, Int), S
             match i_entry with (i_idx, i_prods) in
             -- for each item A -> a. in I
             setFold (lam r. lam a_entry: LRProduction.
-                match a_entry with (_, item) in
+                match a_entry with (name, item) in
                 match partitionDot item with (true, items, []) then
                     -- R <- R u {(I, A -> a)}
-                    setInsert (i_idx, a_entry, items) r
+                    let matchingRules =
+                        foldl (lam acc. lam rule.
+                            match acc with (ruleIdx, prev) in
+                            if and (eqString rule.0 name) (eqi (cmpLRItem rule.1 items) 0) then
+                                (addi ruleIdx 1, snoc prev ruleIdx)
+                            else
+                                (addi ruleIdx 1, prev)
+                        ) (0, []) syntaxDef
+                    in
+                    match matchingRules with (_, [ruleIdx]) then
+                        setInsert (i_idx, a_entry, ruleIdx) r
+                    else match matchingRules with (_, []) then
+                        error "No matching rule for reduce... Impossible?"
+                    else
+                        error "No reduce reduce conflict..."
                 else
                     r -- does not match the A -> a. format
             ) r i_prods
@@ -248,6 +262,110 @@ let buildReduceActions: (Map Int (Set LRProduction), Set (Int, LRSymbol, Int), S
     (t, e, r)
 
 
+-- Test parsing a string
+let parseTest: String -> () = lam s.
+    match buildReduceActions with (t, e, r) in
+    type StackObject in
+    con SOTerminal : Char -> StackObject in
+    con SONonTerminal : (String, Int, [StackObject]) -> StackObject in
+    con SOEOF : () -> StackObject in
+    recursive let so2string = lam so. switch so
+      case SOTerminal c then ['\'', c, '\'']
+      case SOEOF () then "EOF"
+      case SONonTerminal (name, ruleIdx, subObjs) then join [
+          name, "[", int2string ruleIdx, "]<",
+          strJoin ", " (map so2string subObjs), ">"
+        ]
+    end in
+    let token2so = lam t. switch t case Terminal c then SOTerminal c case EOF () then SOEOF () case _ then error "Invalid token" end in
+    let tokenStream: [LRSymbol] = snoc (map (lam c. Terminal c) s) (EOF ()) in
+    recursive let work = lam stack: [StackObject]. lam stateTrace: [Int]. lam currentToken: LRSymbol. lam tokenStream: [LRSymbol].
+        let currentState = head stateTrace in
+        -- Debug printing:
+        printLn (join ["currentState: ", int2string currentState, ""]);
+        printLn (join ["[[ currentToken: ", so2string (token2so currentToken), " ]]"]);
+        printLn (join ["[[ stack: [", strJoin ", " (reverse (map so2string stack)), "] ]]"]);
+        -- Check if current state is a reduce state
+        let reductions = setFold (lam acc. lam r_entry.
+            if eqi currentState r_entry.0
+              then cons r_entry acc
+              else acc
+        ) [] r in
+        let shifts = setFold (lam acc. lam e_entry.
+            match (currentToken, e_entry.1) with (Terminal c1, Terminal c2) then
+                if and (eqi currentState e_entry.0) (eqChar c1 c2)
+                  then cons e_entry acc
+                  else acc
+            else
+                acc
+        ) [] e in
+        let accepts = setFold (lam acc. lam e_entry.
+            match (currentToken, e_entry.1) with (EOF (), EOF ()) then
+                if eqi currentState e_entry.0
+                  then cons e_entry acc
+                  else acc
+            else
+                acc
+        ) [] e in
+        let totalActions = foldl addi 0 [length reductions, length shifts, length accepts] in
+        --if eqi totalActions 0 then
+        --    error (join ["No action to take in state ", int2string state])
+        --else
+        if gti totalActions 1 then
+            error (join ["Conflicting actions to take in state ", int2string currentState])
+        else --continue
+        match reductions with [r_entry] then
+          let rule = get syntaxDef r_entry.2 in
+          printLn (join ["[[ reducing by rule: ", int2string r_entry.2, " ]]"]);
+          match rule with (rulename, symbollist) in
+          --let stack = cons currentToken stack in
+          let ntTokens = reverse (subsequence stack 0 (length symbollist)) in
+          let stack = subsequence stack (length symbollist) (length stack) in
+          let stateTrace = subsequence stateTrace (length symbollist) (length stateTrace) in
+          let reducedNT = SONonTerminal (rulename, r_entry.2, ntTokens) in
+          let currentState = head stateTrace in
+          -- Now to find the appropriate goto's
+          printLn "  [[ GOTO operation ]]";
+          printLn (join ["     currentState: ", int2string currentState]);
+          printLn (join ["     [[ reducedNT: ", so2string reducedNT, " ]]"]);
+          printLn (join ["     [[ stack: [", strJoin ", " (reverse (map so2string stack)), "] ]]"]);
+          let gotos = setFold (lam acc. lam e_entry.
+              match (reducedNT, e_entry.1) with (SONonTerminal x1, NonTerminal s2) then
+                  if and (eqi currentState e_entry.0) (eqString x1.0 s2)
+                    then cons e_entry acc
+                    else acc
+              else
+                  acc
+          ) [] e in
+          match gotos with [e_entry] then
+            let nextState = e_entry.2 in
+            let stack = cons reducedNT stack in
+            let stateTrace = cons nextState stateTrace in
+            work stack stateTrace currentToken tokenStream
+          else match gotos with [] then
+            error (join ["Could not find a matching goto in state ", int2string currentState])
+          else
+            error (join ["Conflicting gotos in state ", int2string currentState])
+        else match shifts with [e_entry] then
+          let nextState = e_entry.2 in
+          printLn (join ["[[ shifting into state: ", int2string nextState, " ]]"]);
+          let stack = cons (token2so currentToken) stack in
+          let stateTrace = cons nextState stateTrace in
+          let currentToken = head tokenStream in
+          let tokenStream = tail tokenStream in
+          work stack stateTrace currentToken tokenStream
+        else match accepts with [e_entry] then
+          if neqi (length stack) 1 then
+            error "Expected a stack of length 1"
+          else if neqi (length tokenStream) 0 then
+            error "Expected only to have the EOF token left!"
+          else
+            head stack
+        else
+          error (join ["No action to take in state ", int2string currentState])
+    in
+    let result = work [] [0] (head tokenStream) (tail tokenStream) in
+    printLn "DONE"
 
 
 /-
@@ -327,7 +445,7 @@ let showInt = lam indent. lam i. int2string i in
 
 let showT = showMap showInt (showSet showLRProduction) 0 in
 let showE = showSet (show3tuple showInt showLRSymbol showInt) 0 in
-let showR = showSet (show3tuple showInt showLRProduction showLRItem) 0 in
+let showR = showSet (show3tuple showInt showLRProduction showInt) 0 in
 
 print "syntax: ";
 printLn (showSeq showLRProduction 0 syntaxDef);
@@ -337,4 +455,8 @@ print "transitions (E): ";
 printLn (showE e);
 print "reductions (R): ";
 printLn (showR r);
+
+printLn "parsing ((x),x):";
+parseTest "((x),x)";
+
 ()
