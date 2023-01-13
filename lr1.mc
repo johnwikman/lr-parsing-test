@@ -542,7 +542,7 @@ let lr1ParseTest =
       case [s1, s2] ++ _ then
         error "shift-shift conflict"
       case [] then
-        error "no action to take"
+        error "no shift action to take after reduce"
       end
     case ([], [shift]) then
       let nextState = shift.toIdx in
@@ -712,14 +712,14 @@ let #var"*a*b=": [Token] = [
 --let syntaxDef = syntaxDef_LR0_example in
 --let tokens = #var"((x),x)" in
 -- LR1 Example:
-let syntaxDef = syntaxDef_LR1_example in
-let tokens = #var"*s = **a" in
+--let syntaxDef = syntaxDef_LR1_example in
+--let tokens = #var"*s = **a" in
 -- Empty Example:
 --let syntaxDef = syntaxDef_Empty_example in
 --let tokens = #var"***" in
 -- LR2 Example: (This should fail since we are only LR1!)
---let syntaxDef = syntaxDef_LR2_example in
---let tokens = #var"*a*b=" in
+let syntaxDef = syntaxDef_LR2_example in
+let tokens = #var"*a*b=" in
 
 let res = lr1TableBuilder syntaxDef in
 match res with (syntaxDef, parseTable) in
