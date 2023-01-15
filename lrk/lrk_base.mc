@@ -70,7 +70,8 @@ lang LRBase = LRTokens
     _debugStates: [Set LRStateItem],
     nStates: Int,
     syntaxDef: LRSyntaxDef,
-    transitions: Map Int [{term: LRTerm, lookahead: [Token], toIdx: Int}],
+    shifts: Map Int [{lookahead: [Token], toIdx: Int}],
+    gotos: Map Int [{name: Name, lookahead: [Token], toIdx: Int}],
     reductions: Map Int [{lookahead: [Token], ruleIdx: Int}]
   }
 
@@ -313,7 +314,8 @@ lang LRBase = LRTokens
       _debugStates = [initState],
       nStates = 1,
       syntaxDef = syntaxDef,
-      transitions = mapEmpty subi,
+      shifts = mapEmpty subi,
+      gotos = mapEmpty subi,
       reductions = mapEmpty subi
     } in
 
@@ -323,37 +325,60 @@ lang LRBase = LRTokens
         table
       else --continue
       let state = get table._debugStates nextStateIdx in
-      let result = setFold (lam acc: (LRParseTable, Map (Set LRStateItem) Int, [{term: LRTerm, lookahead: [Token], toIdx: Int}]). lam item: LRStateItem.
-        match acc with (table, stateIdxLookup, stateTransitions) in
-        match subsequence item.terms item.stackPointer (length item.terms)
-        with ([x] ++ b & nextTerms) then
-          let j = lrGoto k syntaxDef firstK state x in
-          let possibleLookaheads = lrComposeFirst k firstK (concat nextTerms (map (lam t. Terminal t) item.lookahead)) in
-          match mapLookup j stateIdxLookup with Some jIdx then
-            -- the state j already exists
-            let stateTransitions = setFold (lam acc. lam lh. cons {term = x, lookahead = lh, toIdx = jIdx} acc) stateTransitions possibleLookaheads in
-            (table, stateIdxLookup, stateTransitions)
-          else
-            -- the state j is new, add it to the table
-            let jIdx = length table._debugStates in
-            let table = {table with _debugStates = snoc table._debugStates j, nStates = addi table.nStates 1} in
-            let stateIdxLookup = mapInsert j jIdx stateIdxLookup in
-            let stateTransitions = setFold (lam acc. lam lh. cons {term = x, lookahead = lh, toIdx = jIdx} acc) stateTransitions possibleLookaheads in
-            (table, stateIdxLookup, stateTransitions)
-        else
-          acc
-      ) (table, stateIdxLookup, []) state in
-      match result with (table, stateIdxLookup, stateTransitions) in
-      let cmpTransition = lam lhs. lam rhs.
-        let cTerm = cmpLRTerm lhs.term rhs.term in
+
+      let cmpShift = lam lhs. lam rhs.
         let cLookahead = seqCmp cmpToken lhs.lookahead rhs.lookahead in
-        if neqi cTerm 0 then cTerm
+        if neqi cLookahead 0 then cLookahead
+        else subi lhs.toIdx rhs.toIdx
+      in
+      let cmpGoto = lam lhs. lam rhs.
+        let cName = nameCmp lhs.name rhs.name in
+        let cLookahead = seqCmp cmpToken lhs.lookahead rhs.lookahead in
+        if neqi cName 0 then cName
         else if neqi cLookahead 0 then cLookahead
         else subi lhs.toIdx rhs.toIdx
       in
+
+      let result = setFold (lam acc: (LRParseTable, Map (Set LRStateItem) Int, Set {lookahead: [Token], toIdx: Int}, Set {name: Name, lookahead: [Token], toIdx: Int}). lam item: LRStateItem.
+        match acc with (table, stateIdxLookup, stateShifts, stateGotos) in
+        match subsequence item.terms item.stackPointer (length item.terms)
+        with ([x] ++ b) & postStackTerms then
+          let j = lrGoto k syntaxDef firstK state x in
+
+          let jInsertResult =
+            match mapLookup j stateIdxLookup with Some jIdx then
+              (table, stateIdxLookup, jIdx)
+            else
+              -- the state j is new, add it to the table
+              let jIdx = length table._debugStates in
+              let table = {table with _debugStates = snoc table._debugStates j, nStates = addi table.nStates 1} in
+              let stateIdxLookup = mapInsert j jIdx stateIdxLookup in
+              (table, stateIdxLookup, jIdx)
+          in
+          match jInsertResult with (table, stateIdxLookup, jIdx) in
+
+          switch x
+          case Terminal t then
+            -- This is a shift action
+            let possibleLookaheads = lrComposeFirst k firstK (concat postStackTerms (map (lam t2. Terminal t2) item.lookahead)) in
+            let stateShifts = setFold (lam acc. lam lh. setInsert {lookahead = lh, toIdx = jIdx} acc) stateShifts possibleLookaheads in
+            (table, stateIdxLookup, stateShifts, stateGotos)
+          case NonTerminal n then
+            -- This is a Goto action
+            let possibleLookaheads = lrComposeFirst k firstK (concat b (map (lam t2. Terminal t2) item.lookahead)) in
+            let stateGotos = setFold (lam acc. lam lh. setInsert {name = n, lookahead = lh, toIdx = jIdx} acc) stateGotos possibleLookaheads in
+            (table, stateIdxLookup, stateShifts, stateGotos)
+          end
+        else
+          acc
+      ) (table, stateIdxLookup, setEmpty cmpShift, setEmpty cmpGoto) state in
+      match result with (table, stateIdxLookup, stateShifts, stateGotos) in
+
       -- Only keep track of unique state transitions
-      let stateTransitions = setToSeq (setOfSeq cmpTransition stateTransitions) in
-      let table = {table with transitions = mapInsert nextStateIdx stateTransitions table.transitions} in
+      let stateShifts = setToSeq stateShifts in
+      let stateGotos = setToSeq stateGotos in
+      let table = {table with shifts = mapInsert nextStateIdx stateShifts table.shifts,
+                              gotos = mapInsert nextStateIdx stateGotos table.gotos} in
       iterate table stateIdxLookup (addi nextStateIdx 1)
     in
     let table = iterate table (mapInsert initState 0 (mapEmpty setCmp)) 0 in
@@ -368,7 +393,7 @@ lang LRBase = LRTokens
       ) [] state in
       {tableAcc with reductions = mapInsert stateIdx stateReductions tableAcc.reductions}
     ) table table._debugStates in
-    
+
     -- Table is now constructed
     table
 end
@@ -572,13 +597,7 @@ let printFirst: Int -> Map LRTerm (Set [Token]) -> () = lam k. lam firstMap.
   ) () firstMap
 in
 
---type LRStateItem = {
---  name: Name,
---  terms: [LRTerm],
---  stackPointer: Int,
---  lookahead: [Token],
---  ruleIdx: Int -- index of the rule that this item originates from
---}
+
 let printStates: [Set LRStateItem] -> () = lam states.
   printLn "  States:";
   foldli (lam. lam stateIdx: Int. lam state: Set LRStateItem.
@@ -609,13 +628,23 @@ let printStates: [Set LRStateItem] -> () = lam states.
 in
 
 
-let printTransitions: Map Int [{term: LRTerm, lookahead: [Token], toIdx: Int}] -> () = lam transitions.
-  printLn "  Transitions:";
-  mapFoldWithKey (lam. lam stateIdx: Int. lam stateTransitions: [{term: LRTerm, lookahead: [Token], toIdx: Int}].
-    foldl (lam. lam trans: {term: LRTerm, lookahead: [Token], toIdx: Int}.
-      printLn (join ["    ", int2string stateIdx, " --", lrterm2string trans.term, "-[", strJoin "," (map token2string trans.lookahead), "]--> ", int2string trans.toIdx])
-    ) () stateTransitions
-  ) () transitions
+let printShifts: Map Int [{lookahead: [Token], toIdx: Int}] -> () = lam shifts.
+  printLn "  Shifts:";
+  mapFoldWithKey (lam. lam stateIdx: Int. lam stateShifts: [{lookahead: [Token], toIdx: Int}].
+    foldl (lam. lam shift: {lookahead: [Token], toIdx: Int}.
+      printLn (join ["    ", int2string stateIdx, " --[", strJoin "," (map token2string shift.lookahead), "]--> ", int2string shift.toIdx])
+    ) () stateShifts
+  ) () shifts
+in
+
+
+let printGotos: Map Int [{name: Name, lookahead: [Token], toIdx: Int}] -> () = lam gotos.
+  printLn "  Gotos:";
+  mapFoldWithKey (lam. lam stateIdx: Int. lam stateGotos: [{name: Name, lookahead: [Token], toIdx: Int}].
+    foldl (lam. lam goto: {name: Name, lookahead: [Token], toIdx: Int}.
+      printLn (join ["    ", int2string stateIdx, " --(", nameGetStr goto.name, ")--[", strJoin "," (map token2string goto.lookahead), "]--> ", int2string goto.toIdx])
+    ) () stateGotos
+  ) () gotos
 in
 
 
@@ -642,7 +671,8 @@ foldl (lam. lam tc: LRTestCase.
   printLn "";
   let lrtable = lrCreateParseTable 2 tc.syntaxDef in
   printStates lrtable._debugStates;
-  printTransitions lrtable.transitions;
+  printShifts lrtable.shifts;
+  printGotos lrtable.gotos;
   printReductions lrtable.reductions;
   printLn "\n\n"
 ) () testcases
